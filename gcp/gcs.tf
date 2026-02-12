@@ -2,7 +2,7 @@
 
 # GCS bucket for storing Terraform state
 module "gcs-scrumpoker-iac" {
-  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v52.0.0"
+  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v53.0.0"
   project_id    = module.project.project_id
   prefix        = module.project.project_id
   name          = "sp-iac-${local.region_shortnames[var.region]}"
