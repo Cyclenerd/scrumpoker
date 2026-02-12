@@ -1,0 +1,7 @@
+**
+!static/**
+!store/**
+!templates/**
+!go.mod
+!go.sum
+!main.go

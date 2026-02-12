@@ -1,0 +1,459 @@
+package store
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+const (
+	StorageDirEnvVar  = "SCRUMPOKER_STORAGE_DIR"
+	DefaultStorageDir = "./database"
+)
+
+var (
+	ErrRoomNotFound   = errors.New("room not found")
+	ErrPlayerNotFound = errors.New("player not found")
+)
+
+// StoreEngine keeps room state cached in memory and mirrors it to disk when changes occur.
+type StoreEngine struct {
+	baseDir string
+	mu      sync.RWMutex
+	rooms   map[string]*RoomState
+}
+
+// RoomState represents a Scrum Poker room with player roster and reveal status.
+type RoomState struct {
+	ID         string                  `json:"id"`
+	CreatedAt  time.Time               `json:"created_at"`
+	UpdatedAt  time.Time               `json:"updated_at"`
+	Revealed   bool                    `json:"revealed"`
+	Players    map[string]*PlayerState `json:"players"`
+	GameMaster string                  `json:"game_master"`
+	Dirty      bool                    `json:"-"`
+}
+
+// PlayerState captures an individual user's vote and role within a room.
+type PlayerState struct {
+	SessionID    string     `json:"session_id"`
+	Name         string     `json:"name"`
+	Vote         string     `json:"vote,omitempty"`
+	VotedAt      *time.Time `json:"voted_at,omitempty"`
+	IsGameMaster bool       `json:"is_game_master,omitempty"`
+}
+
+func NewStoreEngine(dir string) (*StoreEngine, error) {
+	if dir == "" {
+		dir = DefaultStorageDir
+	}
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(absDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	engine := &StoreEngine{
+		baseDir: absDir,
+		rooms:   make(map[string]*RoomState),
+	}
+
+	if err := engine.bootstrap(); err != nil {
+		return nil, err
+	}
+
+	return engine, nil
+}
+
+func (s *StoreEngine) bootstrap() error {
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+
+		roomID := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		statePath := filepath.Join(s.baseDir, entry.Name())
+
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read %s: %w", statePath, err)
+		}
+
+		var room RoomState
+		if err := json.Unmarshal(data, &room); err != nil {
+			return fmt.Errorf("decode %s: %w", statePath, err)
+		}
+
+		if room.ID == "" {
+			room.ID = roomID
+		}
+		if room.Players == nil {
+			room.Players = make(map[string]*PlayerState)
+		}
+
+		if room.GameMaster == "" {
+			for sessionID, player := range room.Players {
+				if player != nil && player.IsGameMaster {
+					room.GameMaster = sessionID
+					break
+				}
+			}
+		}
+
+		if room.GameMaster == "" {
+			for sessionID, player := range room.Players {
+				if player != nil {
+					room.GameMaster = sessionID
+					player.IsGameMaster = true
+					break
+				}
+			}
+		}
+
+		if room.GameMaster != "" {
+			if gmPlayer, ok := room.Players[room.GameMaster]; ok && gmPlayer != nil {
+				gmPlayer.IsGameMaster = true
+			}
+		}
+
+		room.Dirty = false
+		s.rooms[room.ID] = &room
+	}
+
+	return nil
+}
+
+// CreateRoom registers a new room, making the creator the game master and persisting the initial state.
+func (s *StoreEngine) CreateRoom(roomID, sessionID, ownerName string) error {
+	// Hold the write lock so in-memory room mutations and disk persistence stay atomic.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.rooms[roomID]; exists {
+		return fmt.Errorf("room %s already exists", roomID)
+	}
+
+	now := time.Now().UTC()
+	if ownerName == "" {
+		ownerName = "Game Master"
+	}
+
+	room := &RoomState{
+		ID:         roomID,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Players:    make(map[string]*PlayerState),
+		GameMaster: sessionID,
+	}
+
+	room.Players[sessionID] = &PlayerState{SessionID: sessionID, Name: ownerName, IsGameMaster: true}
+	room.Dirty = true
+	s.rooms[roomID] = room
+
+	// persistRoomLocked assumes the caller already holds s.mu to keep state consistent.
+	return s.persistRoomLocked(room)
+}
+
+// JoinRoom adds or updates a participant and ensures their latest display name is stored.
+func (s *StoreEngine) JoinRoom(roomID, sessionID, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return err
+	}
+
+	if name == "" {
+		name = "Player"
+	}
+
+	if existing, ok := room.Players[sessionID]; ok {
+		existing.Name = name
+	} else {
+		room.Players[sessionID] = &PlayerState{SessionID: sessionID, Name: name, IsGameMaster: false}
+	}
+
+	room.Dirty = true
+
+	return s.persistRoomLocked(room)
+}
+
+func (s *StoreEngine) RegisterVote(roomID, sessionID, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return err
+	}
+
+	player, ok := room.Players[sessionID]
+	if !ok {
+		return ErrPlayerNotFound
+	}
+
+	now := time.Now().UTC()
+	player.Vote = value
+	timestamp := now
+	player.VotedAt = &timestamp
+
+	room.Revealed = false
+	room.Dirty = true
+
+	return s.persistRoomLocked(room)
+}
+
+func (s *StoreEngine) ResetVotes(roomID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return err
+	}
+
+	for _, player := range room.Players {
+		player.Vote = ""
+		player.VotedAt = nil
+	}
+
+	room.Revealed = false
+	room.UpdatedAt = time.Now().UTC()
+	room.Dirty = true
+
+	return s.persistRoomLocked(room)
+}
+
+func (s *StoreEngine) SetReveal(roomID string, revealed bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return err
+	}
+
+	room.Revealed = revealed
+	room.Dirty = true
+
+	return s.persistRoomLocked(room)
+}
+
+func (s *StoreEngine) RemovePlayer(roomID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return err
+	}
+
+	if _, ok := room.Players[sessionID]; !ok {
+		return ErrPlayerNotFound
+	}
+
+	delete(room.Players, sessionID)
+	room.Dirty = true
+
+	return s.persistRoomLocked(room)
+}
+
+// IsGameMaster quickly checks whether the provided session controls reveal/reset actions within the room.
+func (s *StoreEngine) IsGameMaster(roomID, sessionID string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return false, err
+	}
+
+	return room.GameMaster == sessionID, nil
+}
+
+func (s *StoreEngine) Player(roomID, sessionID string) (*PlayerState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	player, ok := room.Players[sessionID]
+	if !ok {
+		return nil, ErrPlayerNotFound
+	}
+
+	return player.clone(), nil
+}
+
+// RoomSnapshot returns a deep copy so callers cannot mutate the cached room directly.
+func (s *StoreEngine) RoomSnapshot(roomID string) (*RoomState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	room, err := s.getRoomUnsafe(roomID)
+	if err != nil {
+		return nil, err
+	}
+
+	return room.clone(), nil
+}
+
+func (s *StoreEngine) FlushAll() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, room := range s.rooms {
+		room.Dirty = true
+		if err := s.persistRoomLocked(room); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *StoreEngine) getRoomUnsafe(roomID string) (*RoomState, error) {
+	room, ok := s.rooms[roomID]
+	if !ok {
+		return nil, ErrRoomNotFound
+	}
+	return room, nil
+}
+
+func (s *StoreEngine) persistRoomLocked(room *RoomState) error {
+	if room == nil || !room.Dirty {
+		return nil
+	}
+
+	payload, err := json.Marshal(room)
+	if err != nil {
+		return err
+	}
+
+	tmpFile, err := os.CreateTemp(s.baseDir, fmt.Sprintf("%s-*.tmp", room.ID))
+	if err != nil {
+		return err
+	}
+
+	if _, err := tmpFile.Write(payload); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpFile.Name())
+		return err
+	}
+
+	finalPath := s.roomFilePath(room.ID)
+	if err := os.Rename(tmpFile.Name(), finalPath); err != nil {
+		os.Remove(tmpFile.Name())
+		return err
+	}
+
+	room.Dirty = false
+	return nil
+}
+
+func (s *StoreEngine) roomFilePath(roomID string) string {
+	return filepath.Join(s.baseDir, fmt.Sprintf("%s.json", roomID))
+}
+
+func (r *RoomState) clone() *RoomState {
+	if r == nil {
+		return nil
+	}
+
+	clonedPlayers := make(map[string]*PlayerState, len(r.Players))
+	for sessionID, player := range r.Players {
+		clonedPlayers[sessionID] = player.clone()
+	}
+
+	return &RoomState{
+		ID:         r.ID,
+		CreatedAt:  r.CreatedAt,
+		UpdatedAt:  r.UpdatedAt,
+		Revealed:   r.Revealed,
+		Players:    clonedPlayers,
+		GameMaster: r.GameMaster,
+	}
+}
+
+func (p *PlayerState) clone() *PlayerState {
+	if p == nil {
+		return nil
+	}
+
+	clone := *p
+	if p.VotedAt != nil {
+		ts := *p.VotedAt
+		clone.VotedAt = &ts
+	}
+	return &clone
+}
+
+// SanitizedCopy hides other players' votes unless the room has been revealed and can optionally mask session IDs.
+func (r *RoomState) SanitizedCopy(viewerSessionID string, maskSessions bool) *RoomState {
+	clone := r.clone()
+	if clone == nil {
+		return nil
+	}
+
+	if !clone.Revealed {
+		for sessionID, player := range clone.Players {
+			if sessionID != viewerSessionID {
+				player.Vote = ""
+			}
+		}
+	}
+
+	if maskSessions {
+		maskedPlayers := make(map[string]*PlayerState, len(clone.Players))
+		for sessionID, player := range clone.Players {
+			maskedID := MaskSessionID(sessionID)
+			player.SessionID = maskedID
+			maskedPlayers[maskedID] = player
+		}
+		clone.Players = maskedPlayers
+		clone.GameMaster = MaskSessionID(clone.GameMaster)
+	}
+
+	return clone
+}
+
+// MaskSessionID deterministically maps a session token to a UUID so clients can correlate players without exposing raw IDs.
+func MaskSessionID(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	masked := uuid.NewSHA1(uuid.NameSpaceOID, []byte(sessionID))
+	return masked.String()
+}

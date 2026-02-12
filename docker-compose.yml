@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  web:
+    platform: linux/amd64
+    image: localhost/scrumpoker:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - SCRUMPOKER_STORAGE_DIR=/var/lib/database
+    volumes:
+      - ./database:/var/lib/database:rw

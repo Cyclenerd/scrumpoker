@@ -1,0 +1,31 @@
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Terraform
+.terraform.lock.hcl
+.terraform.tfstate.lock.info
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+cloudbuild-container.yaml
+build-container.sh
+!gcp/build-container.template.sh
+providers.tf.gcs
+# If you want to have your provider file versioned, remove the line
+providers.tf
+
+# App
+scrumpoker
+database/**

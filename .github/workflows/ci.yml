@@ -1,0 +1,124 @@
+name: "CI"
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  go:
+    name: "Go 🐹"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 🐹 Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      - name: 📥 Install dependencies
+        run: go mod download
+
+      - name: 🔍 Format
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "Go code is not formatted:"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: 🔍 Vet
+        run: go vet ./...
+
+      - name: 🏗️ Build
+        run: go build -v ./...
+
+  terraform:
+    name: "Terraform 🏗️"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gcp
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: 🔍 Terraform Format
+        run: terraform fmt -check -recursive
+
+      - name: 📋 Terraform Init
+        run: terraform init -backend=false
+
+      - name: 🔍 Terraform Validate
+        run: terraform validate
+
+      - name: 🔒 Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: 🔍 Run TFLint
+        run: tflint
+
+      - name: 🛡️ Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: gcp
+
+  shell:
+    name: "Shell 🐚"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 🔍 ShellCheck
+        run: |
+          shellcheck tools/*.sh && shellcheck gcp/*.sh
+
+  docker:
+    name: "Docker 🐳"
+    needs: [go, terraform, shell]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Build Docker image
+        run: |
+          docker build -t scrumpoker .
+
+      - name: 🚀 Start Docker container
+        run: |
+          docker run -d -p 8080:8080 \
+            --name scrumpoker scrumpoker
+
+      - name: ⏳ Wait for container to be ready
+        run: |
+          # Wait for up to 30 seconds for the service to respond
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/robots.txt > /dev/null; then
+              echo "Container is ready!"
+              exit 0
+            fi
+            echo "Waiting for container... ($i/30)"
+            sleep 1
+          done
+          echo "Container failed to start in time"
+          docker logs scrumpoker
+          exit 1
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          docker stop scrumpoker || true
+          docker rm scrumpoker || true

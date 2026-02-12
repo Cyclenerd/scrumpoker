@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Room {{.RoomID}} - Scrum Poker</title>
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/img/icon/apple-touch.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/img/icon/192x192.png">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .js-card {
+            transition: all 0.3s ease;
+            perspective: 1000px;
+        }
+
+        .flip-card-inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            transition: transform 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            transform-style: preserve-3d;
+        }
+
+        .is-flipped .flip-card-inner {
+            transform: rotateY(180deg);
+        }
+
+        .flip-card-front,
+        .flip-card-back {
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+        }
+
+        .flip-card-back {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: rotateY(180deg);
+        }
+
+        .js-card.selected-card {
+            border: 2px solid var(--bs-primary) !important;
+            transform: scale(1.05);
+            z-index: 10;
+            box-shadow: 0 0 15px rgba(var(--bs-primary-rgb), 0.5) !important;
+            border-radius: var(--bs-border-radius);
+        }
+
+        .js-card.dimmed-card {
+            opacity: 0.3;
+            filter: grayscale(0.2);
+        }
+    </style>
+    <script>
+        const roomId = "{{.RoomID}}";
+        const sessionId = "{{.SessionID}}";
+        const isGameMaster = {{if .IsGameMaster}}true{{else}}false{{end}};
+        const initialVote = {{if .Player}}{{printf "%q" .Player.Vote}}{{else}}""{{end}};
+        let timerInterval;
+        let startTime;
+        let wasAllVotesCleared = true;
+        let lastRevealState = false;
+        let reconnectHandle;
+        let lastTimerUpdatedAt = null;
+
+        function getStreamUpdatedAt(state) {
+            if (!state) {
+                return null;
+            }
+            const stream = state.stream || state.Stream;
+            if (stream) {
+                return stream.updated_at || stream.UpdatedAt || stream.updatedAt || null;
+            }
+            return state.updated_at || state.UpdatedAt || state.updatedAt || null;
+        }
+
+        // updateTimer refreshes the big stopwatch on the page every second.
+        function updateTimer() {
+            if (typeof startTime !== 'number') {
+                return;
+            }
+            const now = Date.now();
+            const elapsed = now - startTime;
+            const seconds = Math.floor((elapsed / 1000) % 60);
+            const minutes = Math.floor((elapsed / 1000 / 60));
+            document.getElementById('timer').textContent =
+                (minutes < 10 ? '0' : '') + minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
+        }
+
+        // startTimer restarts the stopwatch, useful when a new round begins.
+        function startTimer(baseTime) {
+            if (timerInterval) clearInterval(timerInterval);
+
+            let referenceTime = null;
+            if (typeof baseTime === 'number' && Number.isFinite(baseTime)) {
+                referenceTime = baseTime;
+            } else if (baseTime instanceof Date) {
+                referenceTime = baseTime.getTime();
+            } else if (typeof baseTime === 'string') {
+                const parsed = Date.parse(baseTime);
+                if (!Number.isNaN(parsed)) {
+                    referenceTime = parsed;
+                }
+            }
+
+            if (referenceTime === null) {
+                referenceTime = Date.now();
+            }
+
+            startTime = referenceTime;
+            timerInterval = setInterval(updateTimer, 1000);
+            updateTimer();
+        }
+
+        // setStatus shows transient feedback messages near the card grid.
+        function setStatus(message, variant = 'warning') {
+            const el = document.getElementById('statusMessage');
+            if (!el) return;
+            if (!message) {
+                el.classList.add('d-none');
+                el.textContent = '';
+                return;
+            }
+            el.textContent = message;
+            el.className = `alert alert-${variant} py-2 px-3 small`;
+            el.classList.remove('d-none');
+        }
+
+        // clearStatus hides the status banner.
+        function clearStatus() {
+            setStatus('');
+        }
+
+        // highlightSelectedValue visually marks the card the current user picked.
+        function highlightSelectedValue(value) {
+            const cards = document.querySelectorAll('.js-card');
+            cards.forEach(card => {
+                card.classList.remove('selected-card', 'dimmed-card');
+                if (!value) return;
+                if (card.dataset.value === value) {
+                    card.classList.add('selected-card');
+                } else {
+                    card.classList.add('dimmed-card');
+                }
+            });
+        }
+
+        // playRevealAnimation flips every card to show the vote artwork.
+        function playRevealAnimation() {
+            const cards = Array.from(document.querySelectorAll('.js-card'));
+            cards.forEach(card => card.classList.remove('selected-card', 'dimmed-card'));
+            cards.forEach((card, index) => {
+                setTimeout(() => {
+                    card.classList.add('is-flipped');
+                }, index * 80);
+            });
+
+            const revealBtn = document.getElementById('revealBtn');
+            const newRoundBtn = document.getElementById('newRoundBtn');
+            if (revealBtn) {
+                revealBtn.classList.add('d-none');
+            }
+            if (newRoundBtn) {
+                newRoundBtn.classList.remove('btn-danger');
+                newRoundBtn.classList.add('btn-outline-danger');
+            }
+        }
+
+        // playNewRoundAnimation mimics a shuffle by quickly flipping cards back face-down.
+        function playNewRoundAnimation() {
+            const cards = Array.from(document.querySelectorAll('.js-card'));
+            cards.forEach(card => card.classList.remove('selected-card', 'dimmed-card'));
+
+            const reversedCards = [...cards].reverse();
+            reversedCards.forEach((card, index) => {
+                setTimeout(() => {
+                    card.classList.add('is-flipped');
+                    setTimeout(() => card.classList.remove('is-flipped'), 800);
+                }, index * 80);
+            });
+
+            const revealBtn = document.getElementById('revealBtn');
+            const newRoundBtn = document.getElementById('newRoundBtn');
+            if (revealBtn) {
+                revealBtn.classList.remove('d-none');
+            }
+            if (newRoundBtn) {
+                newRoundBtn.classList.remove('btn-outline-danger');
+                newRoundBtn.classList.add('btn-danger');
+            }
+        }
+
+        // postForm wraps form submissions so we can reuse the logic for vote/reveal/reset.
+        async function postForm(url, payload) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams(payload || {}),
+                credentials: 'same-origin'
+            });
+            if (!response.ok) {
+                throw new Error(`Request failed with status ${response.status}`);
+            }
+        }
+
+        // submitVote sends the player's choice to the backend and gives quick feedback.
+        async function submitVote(value) {
+            try {
+                await postForm(`/vote/${roomId}`, { value });
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to submit vote', 'danger');
+            }
+        }
+
+        // selectCard handles click events on the card grid.
+        function selectCard(element) {
+            if (element.classList.contains('is-flipped')) return;
+            const value = element.dataset.value;
+            highlightSelectedValue(value);
+            if (value) {
+                submitVote(value);
+            }
+        }
+
+        // revealCards lets the Dealer expose all votes.
+        async function revealCards() {
+            try {
+                await postForm(`/reveal/${roomId}`);
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to reveal cards', 'danger');
+            }
+        }
+
+        // newRound clears all votes and kicks off the timer again.
+        async function newRound() {
+            try {
+                await postForm(`/reset/${roomId}`);
+            } catch (err) {
+                console.error(err);
+                setStatus('Failed to reset room', 'danger');
+            }
+        }
+
+        // normalizePlayer converts server payloads (which might have mixed casing) into a predictable shape.
+        function normalizePlayer(player) {
+            if (!player) return null;
+            const sessionId = player.session_id || player.SessionID || '';
+            const name = player.name || player.Name || 'Player';
+            const vote = player.vote !== undefined ? player.vote : (player.Vote || '');
+            const votedAt = player.voted_at || player.VotedAt || null;
+            const isGM = Boolean(player.is_game_master || player.IsGameMaster);
+            return {
+                sessionId,
+                name,
+                vote,
+                votedAt,
+                isGameMaster: isGM,
+            };
+        }
+
+        // serializePlayers returns an easy-to-work-with array so later UI functions can stay simple.
+        function serializePlayers(playersObj) {
+            return Object.keys(playersObj || {})
+                .map(key => normalizePlayer(playersObj[key]))
+                .filter(Boolean);
+        }
+
+        // updateVotesList keeps the roster in sync, showing who has voted without leaking actual values.
+        function updateVotesList(state) {
+            const list = document.getElementById('votesList');
+            if (!list) return;
+            const players = serializePlayers(state.players || state.Players).sort((a, b) => a.name.localeCompare(b.name));
+            if (!players.length) {
+                list.innerHTML = '<li class="list-group-item bg-transparent px-0 text-muted">Waiting for players...</li>';
+                return;
+            }
+
+            const isRevealed = !!(state.revealed ?? state.Revealed);
+            list.innerHTML = players.map(player => {
+                const isCurrent = player.sessionId === sessionId;
+                const hasVoted = !!player.votedAt;
+                let badge = '<span class="badge text-bg-danger rounded-pill">Waiting...</span>';
+                if (hasVoted && !isRevealed) {
+                    badge = '<span class="badge text-bg-success rounded-pill">Voted</span>';
+                }
+                if (hasVoted && isRevealed && player.vote) {
+                    badge = `<span class="badge bg-primary rounded-pill">${player.vote}</span>`;
+                }
+                let name = player.name;
+                if (player.isGameMaster) {
+                    name += ` <span class="badge text-bg-warning">Dealer</span>`;
+                }
+                if (isCurrent) {
+                    name += ` <span class="badge text-bg-secondary">You</span>`;
+                }
+                return `<li class="list-group-item d-flex justify-content-between align-items-center bg-transparent px-0 border-secondary">
+                            <span>${name}</span>
+                            ${badge}
+                        </li>`;
+            }).join('');
+        }
+
+        // calculateStats produces average/most-common values for the revealed results panel.
+        function calculateStats(state) {
+            const players = serializePlayers(state.players || state.Players);
+            const votes = players.filter(p => p.vote);
+            const numericVotes = votes
+                .map(p => Number(p.vote))
+                .filter(value => Number.isFinite(value));
+
+            const avg = numericVotes.length ? (numericVotes.reduce((a, b) => a + b, 0) / numericVotes.length) : null;
+            const min = numericVotes.length ? Math.min(...numericVotes) : null;
+            const max = numericVotes.length ? Math.max(...numericVotes) : null;
+
+            const tally = votes.reduce((acc, player) => {
+                const key = player.vote;
+                if (!acc[key]) {
+                    acc[key] = [];
+                }
+                acc[key].push(player.name);
+                return acc;
+            }, {});
+
+            const sortedEntries = Object.entries(tally).sort((a, b) => b[1].length - a[1].length);
+            const mostCommon = sortedEntries.length ? sortedEntries[0][0] : null;
+
+            return {
+                avg,
+                min,
+                max,
+                tally: sortedEntries,
+                totalVotes: votes.length,
+                mostCommon
+            };
+        }
+
+        // updateResults toggles the results card between placeholder and real stats.
+        function updateResults(state) {
+            const avgEl = document.getElementById('avgValue');
+            const nearestValueEl = document.getElementById('nearestCardValue');
+            const nearestImage = document.getElementById('nearestCardImage');
+            const rangeLabel = document.getElementById('rangeLabel');
+            const voteBadge = document.getElementById('voteCountBadge');
+            const tbody = document.getElementById('resultsTableBody');
+            if (!avgEl || !nearestValueEl || !rangeLabel || !voteBadge || !tbody) return;
+
+            const isRevealed = !!(state.revealed ?? state.Revealed);
+
+            if (!isRevealed) {
+                avgEl.textContent = '-';
+                nearestValueEl.textContent = '-';
+                if (nearestImage) {
+                    nearestImage.src = '/static/img/cards/back.webp';
+                }
+                rangeLabel.innerHTML = 'Range: <strong>-</strong> — <strong>-</strong>';
+                voteBadge.textContent = 'Votes hidden';
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">Reveal cards to see results</td></tr>';
+                return;
+            }
+
+            const stats = calculateStats(state);
+            avgEl.textContent = stats.avg !== null ? stats.avg.toFixed(1) : '-';
+            nearestValueEl.textContent = stats.mostCommon || '-';
+            if (nearestImage) {
+                if (!stats.mostCommon) {
+                    nearestImage.src = '/static/img/cards/back.webp';
+                } else if (stats.mostCommon === '?') {
+                    nearestImage.src = '/static/img/cards/questionmark.webp';
+                } else if (stats.mostCommon === '☕') {
+                    nearestImage.src = '/static/img/cards/coffee.webp';
+                } else {
+                    nearestImage.src = `/static/img/cards/${stats.mostCommon}.webp`;
+                }
+            }
+            rangeLabel.innerHTML = stats.min !== null && stats.max !== null
+                ? `Range: <strong>${stats.min}</strong> — <strong>${stats.max}</strong>`
+                : 'Range: <strong>-</strong> — <strong>-</strong>';
+            voteBadge.textContent = `${stats.totalVotes} Votes`;
+
+            if (!stats.tally.length) {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No votes yet</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = stats.tally.map(([value, players]) => `
+                <tr>
+                    <th class="fw-bold">${value}</th>
+                    <td>${players.length}</td>
+                    <td>${players.join(', ')}</td>
+                </tr>
+            `).join('');
+        }
+
+        // syncButtons keeps the Dealer controls enabled/disabled appropriately.
+        function syncButtons(state) {
+            if (!isGameMaster) {
+                return;
+            }
+            const revealBtn = document.getElementById('revealBtn');
+            const newRoundBtn = document.getElementById('newRoundBtn');
+            if (!revealBtn || !newRoundBtn) return;
+
+            const players = serializePlayers(state.players || state.Players);
+            const votes = players.filter(p => p.votedAt);
+            const isRevealed = !!(state.revealed ?? state.Revealed);
+
+            revealBtn.disabled = isRevealed || votes.length === 0;
+            newRoundBtn.disabled = votes.length === 0 && !isRevealed;
+
+            if (isRevealed) {
+                revealBtn.classList.add('d-none');
+                newRoundBtn.classList.remove('btn-danger');
+                newRoundBtn.classList.add('btn-outline-danger');
+            } else {
+                revealBtn.classList.remove('d-none');
+                newRoundBtn.classList.remove('btn-outline-danger');
+                newRoundBtn.classList.add('btn-danger');
+            }
+        }
+
+        // updateCurrentUser refreshes the navbar label (e.g., when someone renames themselves).
+        function updateCurrentUser(state) {
+            const label = document.getElementById('currentUserLabel');
+            if (!label) return;
+            const players = serializePlayers(state.players || state.Players);
+            const current = players.find(p => p.sessionId === sessionId);
+            label.textContent = current ? current.name : 'Player';
+        }
+
+        // handleState is the main SSE callback that updates every piece of UI.
+        function handleState(state) {
+            clearStatus();
+            updateVotesList(state);
+            updateResults(state);
+            syncButtons(state);
+            updateCurrentUser(state);
+
+            const players = serializePlayers(state.players || state.Players);
+            const hasGameMaster = players.some(p => p.isGameMaster);
+            if (!hasGameMaster) {
+                setStatus('No Dealer present. Only the Dealer can reveal cards. You can Cash Out to leave.', 'danger');
+            }
+
+            const isRevealed = !!(state.revealed ?? state.Revealed);
+            const current = players.find(p => p.sessionId === sessionId);
+            const highlightValue = !isRevealed && current && current.vote ? current.vote : null;
+            highlightSelectedValue(highlightValue);
+
+            const streamUpdatedAt = getStreamUpdatedAt(state);
+            const allCleared = players.every(p => !p.votedAt);
+            if (allCleared && !isRevealed && !wasAllVotesCleared) {
+                playNewRoundAnimation();
+            }
+
+            const shouldSyncTimer = streamUpdatedAt && (!lastTimerUpdatedAt || (allCleared && !isRevealed && !wasAllVotesCleared));
+            if (shouldSyncTimer && streamUpdatedAt !== lastTimerUpdatedAt) {
+                startTimer(streamUpdatedAt);
+                lastTimerUpdatedAt = streamUpdatedAt;
+            }
+            wasAllVotesCleared = allCleared;
+
+            if (isRevealed && !lastRevealState) {
+                playRevealAnimation();
+            }
+            lastRevealState = isRevealed;
+        }
+
+        // connectStream subscribes to the SSE endpoint and retries with basic backoff on errors.
+        function connectStream() {
+            if (!!window.EventSource === false) {
+                setStatus('Streaming not supported in this browser', 'danger');
+                return;
+            }
+            const source = new EventSource(`/stream/${roomId}`);
+            source.onmessage = event => {
+                try {
+                    const state = JSON.parse(event.data);
+                    handleState(state);
+                } catch (err) {
+                    console.error('Failed to parse room state', err);
+                }
+            };
+            source.onerror = () => {
+                setStatus('Connection lost. Reconnecting…', 'warning');
+                source.close();
+                if (reconnectHandle) clearTimeout(reconnectHandle);
+                reconnectHandle = setTimeout(connectStream, 2000);
+            };
+        }
+
+        // Bootstrap client state once the DOM is ready.
+        window.addEventListener('load', () => {
+            if (initialVote) {
+                highlightSelectedValue(initialVote);
+            }
+            connectStream();
+        });
+    </script>
+</head>
+
+<body class="bg-body-tertiary">
+    <nav class="navbar bg-body-tertiary border-bottom shadow-sm">
+        <div class="container">
+            <a class="navbar-brand fw-bold" href="#">
+                Scrum Poker
+            </a>
+            <div class="d-flex align-items-center">
+                <span class="me-3 text-muted small d-flex align-items-center gap-2">
+                    <span id="currentUserLabel">Player</span>
+                    {{if .IsGameMaster}}
+                    <span class="badge text-bg-warning">Dealer</span>
+                    {{end}}
+                </span>
+                <a class="btn btn-danger btn-sm px-3" href="/logout/{{.RoomID}}" role="button">Cash Out</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container py-5">
+        <div class="row justify-content-center">
+            <div class="col-lg-10">
+                <div class="mb-5 d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="d-flex align-items-center gap-2">
+                            <h1 class="h2 fw-bold mb-1">Room: <code id="roomId">{{.RoomID}}</code></h1>
+                        </div>
+                        <p class="mb-0">
+                            <button class="btn btn-outline-secondary btn-sm" onclick="copyRoomId()"
+                                title="Copy Room ID">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                    class="bi bi-copy" viewBox="0 0 16 16" id="copyIcon">
+                                    <path fill-rule="evenodd"
+                                        d="M4 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V2Zm2-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H6ZM2 5a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1h1v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1v1H2Z" />
+                                </svg>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                    class="bi bi-check2 d-none" viewBox="0 0 16 16" id="checkIcon">
+                                    <path
+                                        d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z" />
+                                </svg>
+                                Copy & Share URL
+                            </button>
+                        </p>
+                    </div>
+                    <div class="text-end">
+                        <div class="h3 fw-bold font-monospace mb-0" id="timer">00:00</div>
+                        <small class="text-muted text-uppercase small"
+                            style="font-size: 0.7rem; letter-spacing: 0.05rem;">Time elapsed</small>
+                    </div>
+                </div>
+
+                <script>
+                    function copyRoomId() {
+                        const roomId = document.getElementById('roomId').innerText.trim();
+                        const roomUrl = new URL(`/room/${roomId}`, window.location.origin).toString();
+                        navigator.clipboard.writeText(roomUrl).then(() => {
+                            const copyIcon = document.getElementById('copyIcon');
+                            const checkIcon = document.getElementById('checkIcon');
+
+                            copyIcon.classList.add('d-none');
+                            checkIcon.classList.remove('d-none');
+
+                            setTimeout(() => {
+                                copyIcon.classList.remove('d-none');
+                                checkIcon.classList.add('d-none');
+                            }, 2000);
+                        });
+                    }
+                </script>
+
+                <section class="card border-0 shadow-sm mb-5">
+                    <div class="card-body p-4">
+                        <h2 class="h5 fw-bold mb-3">Choose your card</h2>
+                        <div id="statusMessage" class="alert alert-warning py-2 px-3 small d-none"></div>
+                        <div class="row row-cols-4 g-3 text-center">
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="0" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/0.webp" class="card-img"
+                                                    alt="0"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="1" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/1.webp" class="card-img"
+                                                    alt="1"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="2" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/2.webp" class="card-img"
+                                                    alt="2"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="3" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/3.webp" class="card-img"
+                                                    alt="3"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="5" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/5.webp" class="card-img"
+                                                    alt="5"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="8" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/8.webp" class="card-img"
+                                                    alt="8"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="13"
+                                    onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/13.webp"
+                                                    class="card-img" alt="13"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="21"
+                                    onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/21.webp"
+                                                    class="card-img" alt="21"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="?" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/questionmark.webp"
+                                                    class="card-img" alt="?"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col col-md">
+                                <div class="js-card" style="cursor: pointer;" data-value="☕" onclick="selectCard(this)">
+                                    <div class="flip-card-inner">
+                                        <div class="flip-card-front">
+                                            <div class="card h-100"><img src="/static/img/cards/coffee.webp"
+                                                    class="card-img" alt="Coffee"></div>
+                                        </div>
+                                        <div class="flip-card-back">
+                                            <div class="card h-100"><img src="/static/img/cards/back.webp"
+                                                    class="card-img" alt="Back"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="row g-4">
+                    <div class="col-md-5">
+                        <div class="card border-0 shadow-sm h-100">
+                            <div class="card-body p-4">
+                                <h2 class="h5 fw-bold mb-3">Votes</h2>
+                                <ul class="list-group list-group-flush" id="votesList">
+                                    <li class="list-group-item bg-transparent px-0 text-muted">Loading players...</li>
+                                </ul>
+
+                                {{if .IsGameMaster}}
+                                <div class="d-grid gap-2 mt-4">
+                                    <button type="button" class="btn btn-success py-2 fw-semibold" id="revealBtn"
+                                        onclick="revealCards()">Reveal</button>
+                                    <button type="button" class="btn btn-danger py-2 fw-semibold" id="newRoundBtn"
+                                        onclick="newRound()">New Round</button>
+                                </div>
+                                {{else}}
+                                <div class="alert alert-secondary mt-4 mb-0 small" role="alert">
+                                    Only Dealer can reveal the cards.
+                                </div>
+                                {{end}}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-7">
+                        <div class="card border-0 shadow-sm h-100">
+                            <div class="card-body p-4">
+                                <h2 class="h5 fw-bold mb-3">Results</h2>
+                                <!-- Results Stats -->
+                                <div class="row g-3 mb-4 text-center">
+                                    <div class="col-6 col-sm-6">
+                                        <div
+                                            class="card border-0 bg-primary-subtle shadow-sm h-100 p-3 px-4 pt-4 align-items-start">
+                                            <div class="text-uppercase fw-bold text-muted small mb-2"
+                                                style="font-size: 0.65rem; letter-spacing: 0.05rem;">Average</div>
+                                            <div class="h2 fw-bold text-primary mb-0" id="avgValue">-</div>
+                                        </div>
+                                    </div>
+                                    <div class="col-6 col-sm-6">
+                                        <div class="card border-0 bg-success-subtle shadow-sm h-100 p-3 px-4 pt-4">
+                                            <div class="d-flex align-items-start justify-content-between text-start">
+                                                <div>
+                                                    <div class="text-uppercase fw-bold text-muted small mb-2"
+                                                        style="font-size: 0.65rem; letter-spacing: 0.05rem;">Nearest
+                                                        Card</div>
+                                                    <div class="h2 fw-bold text-success mb-0" id="nearestCardValue">-
+                                                    </div>
+                                                </div>
+                                                <img src="/static/img/cards/back.webp" class="rounded shadow-sm"
+                                                    style="height: 85px;" alt="Nearest card" id="nearestCardImage">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-12">
+                                        <div class="card border-0 bg-dark-subtle shadow-sm p-2 px-3">
+                                            <div class="d-flex justify-content-between align-items-center small">
+                                                <span class="text-muted" id="rangeLabel">Range: <strong>-</strong> —
+                                                    <strong>-</strong></span>
+                                                <span class="badge bg-secondary opacity-75" id="voteCountBadge">0
+                                                    Votes</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="table-responsive">
+                                    <table class="table table-hover table-borderless align-middle mb-0">
+                                        <thead class="text-muted small">
+                                            <tr>
+                                                <th>Value</th>
+                                                <th>Count</th>
+                                                <th>Players</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="small" id="resultsTableBody">
+                                            <tr>
+                                                <td colspan="3" class="text-center text-muted">Reveal cards to see
+                                                    results</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="py-4 mt-5 border-top bg-body">
+        <div class="container text-center">
+            <p class="small text-muted mb-0">
+                <a href="https://github.com/Cyclenerd/scrumpoker" class="text-decoration-none text-muted"
+                    title="View code on GitHub">&lt;&gt; Code</a>
+            </p>
+        </div>
+    </footer>
+</body>
+
+</html>
