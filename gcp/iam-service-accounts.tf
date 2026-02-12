@@ -2,7 +2,7 @@
 
 # Service Account for the Runners Manager (Cloud Run)
 module "service-account-cloud-run-scrumpoker" {
-  source       = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/iam-service-account?ref=v52.0.0"
+  source       = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/iam-service-account?ref=v53.0.0"
   project_id   = module.project.project_id
   name         = "scrumpoker"
   display_name = "Cloud Run - Scrum Poker (Terraform managed)"
