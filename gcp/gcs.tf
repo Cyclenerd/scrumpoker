@@ -53,7 +53,7 @@ module "gcs-scrumpoker-cloud-build" {
 
 # GCS bucket for storing the SQLite database
 module "gcs-scrumpoker-database" {
-  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v52.0.0"
+  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v53.0.0"
   project_id    = module.project.project_id
   prefix        = module.project.project_id
   name          = "sp-db-${local.region_shortnames[var.region]}"
