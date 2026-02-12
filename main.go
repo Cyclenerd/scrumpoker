@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	templatesDir = "./templates"
-	staticDir    = "./static"
-	cookiePrefix = "scrumpoker_session_"
+	templatesDir      = "./templates"
+	staticDir         = "./static"
+	cookiePrefix      = "scrumpoker_session_"
+	streamMaxDuration = 4*time.Minute + 30*time.Second
 )
 
 var (
@@ -399,9 +400,16 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
+	// Close stream connections before the Google Cloud Run timeout does
+	// letting clients reconnect cleanly and eliminating the "Truncated response body" warning.
+	timeout := time.NewTimer(streamMaxDuration)
+	defer timeout.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-timeout.C:
 			return
 		case <-ticker.C:
 			if err := sendSnapshot(); err != nil {
