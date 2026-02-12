@@ -79,7 +79,7 @@ func main() {
 		http.ServeFile(w, r, filepath.Join(staticDir, "robots.txt"))
 	})
 
-	// 5. Register application routes.
+	// Register application routes.
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/create", handleCreate)
 	http.HandleFunc("/room/", handleRoom)

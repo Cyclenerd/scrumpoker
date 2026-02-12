@@ -14,12 +14,18 @@ import (
 )
 
 const (
-	StorageDirEnvVar  = "SCRUMPOKER_STORAGE_DIR"
+	// StorageDirEnvVar overrides where room snapshots are persisted on disk.
+	StorageDirEnvVar = "SCRUMPOKER_STORAGE_DIR"
+
+	// DefaultStorageDir is used when no override is provided.
 	DefaultStorageDir = "./database"
 )
 
 var (
-	ErrRoomNotFound   = errors.New("room not found")
+	// ErrRoomNotFound indicates the requested room is absent from the cache or disk.
+	ErrRoomNotFound = errors.New("room not found")
+
+	// ErrPlayerNotFound indicates the given session ID is not registered in the room.
 	ErrPlayerNotFound = errors.New("player not found")
 )
 
@@ -50,6 +56,7 @@ type PlayerState struct {
 	IsGameMaster bool       `json:"is_game_master,omitempty"`
 }
 
+// NewStoreEngine initializes the store, hydrates state from disk, and ensures the persistence directory exists.
 func NewStoreEngine(dir string) (*StoreEngine, error) {
 	if dir == "" {
 		dir = DefaultStorageDir
@@ -76,6 +83,7 @@ func NewStoreEngine(dir string) (*StoreEngine, error) {
 	return engine, nil
 }
 
+// bootstrap loads all JSON room snapshots from disk into memory and normalizes their structure.
 func (s *StoreEngine) bootstrap() error {
 	entries, err := os.ReadDir(s.baseDir)
 	if err != nil {
@@ -202,6 +210,7 @@ func (s *StoreEngine) JoinRoom(roomID, sessionID, name string) error {
 	return s.persistRoomLocked(room)
 }
 
+// RegisterVote stores a player's latest estimate and marks the room as needing persistence.
 func (s *StoreEngine) RegisterVote(roomID, sessionID, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,6 +236,7 @@ func (s *StoreEngine) RegisterVote(roomID, sessionID, value string) error {
 	return s.persistRoomLocked(room)
 }
 
+// ResetVotes clears every player's estimate and timestamps while keeping the roster intact.
 func (s *StoreEngine) ResetVotes(roomID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -248,6 +258,7 @@ func (s *StoreEngine) ResetVotes(roomID string) error {
 	return s.persistRoomLocked(room)
 }
 
+// SetReveal flips the reveal flag so clients know whether votes should be visible.
 func (s *StoreEngine) SetReveal(roomID string, revealed bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -263,6 +274,7 @@ func (s *StoreEngine) SetReveal(roomID string, revealed bool) error {
 	return s.persistRoomLocked(room)
 }
 
+// RemovePlayer deletes a participant from the roster and persists the new state.
 func (s *StoreEngine) RemovePlayer(roomID, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,6 +307,7 @@ func (s *StoreEngine) IsGameMaster(roomID, sessionID string) (bool, error) {
 	return room.GameMaster == sessionID, nil
 }
 
+// Player returns a safe copy of the requested participant so callers cannot mutate shared state.
 func (s *StoreEngine) Player(roomID, sessionID string) (*PlayerState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -325,6 +338,7 @@ func (s *StoreEngine) RoomSnapshot(roomID string) (*RoomState, error) {
 	return room.clone(), nil
 }
 
+// FlushAll forces every dirty room to be written to disk, useful during shutdown.
 func (s *StoreEngine) FlushAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -339,6 +353,7 @@ func (s *StoreEngine) FlushAll() error {
 	return nil
 }
 
+// getRoomUnsafe assumes the caller already holds a lock and fetches a room reference.
 func (s *StoreEngine) getRoomUnsafe(roomID string) (*RoomState, error) {
 	room, ok := s.rooms[roomID]
 	if !ok {
@@ -347,6 +362,7 @@ func (s *StoreEngine) getRoomUnsafe(roomID string) (*RoomState, error) {
 	return room, nil
 }
 
+// persistRoomLocked writes a room atomically to disk and clears the Dirty flag; caller must hold s.mu.
 func (s *StoreEngine) persistRoomLocked(room *RoomState) error {
 	if room == nil || !room.Dirty {
 		return nil
@@ -383,6 +399,7 @@ func (s *StoreEngine) persistRoomLocked(room *RoomState) error {
 	return nil
 }
 
+// roomFilePath returns the absolute path for a room's backing JSON file.
 func (s *StoreEngine) roomFilePath(roomID string) string {
 	return filepath.Join(s.baseDir, fmt.Sprintf("%s.json", roomID))
 }
