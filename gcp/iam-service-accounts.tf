@@ -24,7 +24,7 @@ resource "time_sleep" "wait_for_service_account_cloud_run" {
 
 # Service Account for Cloud Build (Container image creation)
 module "service-account-cloud-build" {
-  source       = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/iam-service-account?ref=v52.0.0"
+  source       = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/iam-service-account?ref=v53.0.0"
   project_id   = module.project.project_id
   name         = "cloud-build-container"
   display_name = "Cloud Build - Create container (Terraform managed)"
