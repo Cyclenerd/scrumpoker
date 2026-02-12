@@ -23,7 +23,7 @@ module "gcs-scrumpoker-iac" {
 
 # GCS bucket for Cloud Build source staging
 module "gcs-scrumpoker-cloud-build" {
-  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v52.0.0"
+  source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v53.0.0"
   project_id    = module.project.project_id
   prefix        = module.project.project_id
   name          = "sp-build-${local.region_shortnames[var.region]}"
