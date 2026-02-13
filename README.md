@@ -17,6 +17,7 @@
 -   **Real-time Updates**: Uses Server-Sent Events (SSE) for instant vote visibility without refreshing.
 -   **No Registration**: Jump straight into a room with a generated session ID.
 -   **Ad-Hoc Rooms**: Create a room instantly; rooms persist in memory (flushed to disk on shutdown) and are stored for a maximum of one day.
+-   **Serverless Ready**: Tested and optimized for Google Cloud Run; runs within free tier limits for small teams.
 -   **Dealer Controls**: The room creator (Game Master, Dealer) has exclusive rights to **Reveal Cards** and **Reset Votes**.
 -   **Standard Deck**: Includes Fibonacci sequence (0, 1, 2, 3, 5, 8, 13, 21), `?` (unsure), and `☕` (break).
 -   **Mobile Friendly**: Responsive design works seamlessly on desktop and mobile.
