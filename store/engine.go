@@ -392,6 +392,14 @@ func (s *StoreEngine) persistRoomLocked(room *RoomState) error {
 		room.UpdatedAt = time.Now().UTC()
 	}
 
+	// Skip persistence and remove file if room is older than 1 day
+	if time.Since(room.CreatedAt) > 24*time.Hour {
+		finalPath := s.roomFilePath(room.ID)
+		os.Remove(finalPath) // Safe to call even if file doesn't exist
+		room.Dirty = false
+		return nil
+	}
+
 	// Serialize the room state to JSON format
 	payload, err := json.Marshal(room)
 	if err != nil {
