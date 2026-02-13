@@ -362,39 +362,81 @@ func (s *StoreEngine) getRoomUnsafe(roomID string) (*RoomState, error) {
 	return room, nil
 }
 
-// persistRoomLocked writes a room atomically to disk and clears the Dirty flag; caller must hold s.mu.
+// persistRoomLocked atomically writes room state to disk using a write-and-rename pattern.
+// This function assumes the caller already holds s.mu to prevent concurrent modifications.
+//
+// Data Storage Mechanism:
+// Each room is stored as a separate JSON file in the baseDir directory.
+// The filename format is: <room-id>.json
+//
+// Atomic Write Pattern:
+// To ensure crash safety and prevent data corruption, we use an atomic write-and-rename approach:
+//  1. Create a temporary file in the same directory with a .tmp extension
+//  2. Write the complete JSON payload to the temporary file
+//  3. Close the temporary file to flush all buffers
+//  4. Atomically rename the temp file to the final filename
+//     (on POSIX systems, rename is atomic and replaces the destination if it exists)
+//  5. Set file timestamps to match room metadata
+//
+// This guarantees that readers never see a partially written file, even if the process
+// crashes or is killed mid-write. The worst case is that the old version remains intact.
 func (s *StoreEngine) persistRoomLocked(room *RoomState) error {
+	// Skip persistence if the room is nil or has no pending changes
 	if room == nil || !room.Dirty {
 		return nil
 	}
 
+	// Initialize UpdatedAt on first persist (e.g., during CreateRoom) or if somehow unset.
+	// Most callers set this explicitly before marking Dirty=true, so this is a safety net.
+	if room.UpdatedAt.IsZero() {
+		room.UpdatedAt = time.Now().UTC()
+	}
+
+	// Serialize the room state to JSON format
 	payload, err := json.Marshal(room)
 	if err != nil {
 		return err
 	}
 
+	// Create a temporary file in the same directory as the final destination.
+	// The temp file pattern includes the room ID for easier debugging.
 	tmpFile, err := os.CreateTemp(s.baseDir, fmt.Sprintf("%s-*.tmp", room.ID))
 	if err != nil {
 		return err
 	}
 
+	// Write the JSON payload to the temporary file
 	if _, err := tmpFile.Write(payload); err != nil {
 		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpFile.Name()) // Clean up on failure
 		return err
 	}
 
+	// Close the file to ensure all buffers are flushed to disk
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpFile.Name()) // Clean up on failure
 		return err
 	}
 
+	// Atomically move the temp file to its final location.
+	// On Unix-like systems, rename() is atomic. If the destination exists, it's replaced.
 	finalPath := s.roomFilePath(room.ID)
 	if err := os.Rename(tmpFile.Name(), finalPath); err != nil {
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpFile.Name()) // Clean up on failure
 		return err
 	}
 
+	// Synchronize file system timestamps with room metadata:
+	// - Access time (atime) is set to room.CreatedAt (when the room was first created)
+	// - Modification time (mtime) is set to room.UpdatedAt (when the room was last changed)
+	//
+	// This ensures the file metadata on disk reflects the logical creation/modification
+	// times from the application's perspective, not just when the file was written.
+	if err := os.Chtimes(finalPath, room.CreatedAt, room.UpdatedAt); err != nil {
+		return err
+	}
+
+	// Clear the dirty flag to indicate the room state is synchronized with disk
 	room.Dirty = false
 	return nil
 }
