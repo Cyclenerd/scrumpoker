@@ -24,14 +24,24 @@
 
 ## Getting Started
 
-### Prerequisites
+This application is developed and optimized for Google Cloud Platform, leveraging Cloud Run for serverless container execution (with scale-to-zero for cost efficiency) and Google Cloud Storage Buckets for persistent state management. The bucket has a lifecycle policy configured to automatically delete room data older than one day. Note that this automatic cleanup lifecycle policy only works when running in GCP.
 
--   [Docker](https://www.docker.com/) or [Podman](https://podman.io/)
--   [Go 1.25+](https://go.dev/) for local dev
+For local development and testing, the application is fully containerized and supports Docker, Podman, and Kubernetes deployments. You can also run it directly with Go.
 
-### Run with Docker
+### Google Cloud Run Deployment
 
-The easiest way to run Scrum Poker is using the provided Docker configuration.
+[![Run on Google Cloud](https://deploy.cloud.run/button.svg)](./gcp/README.md)
+
+For more information, please see the [`gcp/README.md`](./gcp/README.md).
+
+### Containerization with Docker or Podman
+
+This project supports containerization with either [Docker](https://www.docker.com/) or [Podman](https://podman.io/).
+The instructions and scripts have been tested with Podman.
+
+### Build the Container Image
+
+Alternatively, you can use the `tools/build-podman.sh` script to automate this process with Podman.
 
 1.  **Build the image**:
 
@@ -45,17 +55,21 @@ The easiest way to run Scrum Poker is using the provided Docker configuration.
     docker run -d -p 8080:8080 --name scrumpoker scrumpoker
     ```
 
-    Access the app at `http://localhost:8080`.
+    The application will then be accessible at `http://localhost:8080`.
 
-### Run Using Docker Compose
+### Docker Compose
 
-For a more robust setup with persistent storage:
+Alternatively, you can use docker-compose to manage the application.
+
+Then run:
 
 ```bash
 docker-compose up -d --build
 ```
 
 ### Local Development
+
+Prerequisites: [Go 1.25+](https://go.dev/)
 
 1.  **Clone the repository**:
 
