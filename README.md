@@ -84,6 +84,12 @@ docker-compose up -d --build
 
 Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
 
+## Credits
+
+All background animations are based on GLSL shader animation created by [KF2015](https://www.youtube.com/@KF2015) found on [YouTube](https://www.youtube.com/watch?v=7GutRIhmTwQ). The code was adapted to run in a browser using WebGL.
+
+**Attribution Requirement**: If you re-use one of the animations, please credit KF2015!
+
 ## License
 
 This project is licensed under the **AGPL v3 License**. See the [LICENSE](LICENSE) file for details.
