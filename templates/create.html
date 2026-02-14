@@ -29,7 +29,21 @@
                     </p>
                 </div>
 
-                <form method="POST" action="/create">
+                <div id="form-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Generate form with JavaScript to prevent bot submissions
+        // We expect bots are not executing JavaScript, so they won't see or be able to submit the form
+        (function () {
+            // Obfuscate the form action URL - decode from base64
+            const encodedPath = 'L2NyZWF0ZQ=='; // '/create' in base64
+            const formAction = atob(encodedPath);
+
+            const formHTML = `
+                <form method="POST" action="">
                     <div class="mb-4">
                         <label for="name" class="form-label small text-muted">Your player name</label>
                         <input type="text" class="form-control" id="name" name="name" minlength="3" maxlength="16"
@@ -39,9 +53,23 @@
 
                     <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold">Create Room</button>
                 </form>
-            </div>
-        </div>
-    </div>
+            `;
+
+            document.getElementById('form-container').innerHTML = formHTML;
+
+            // Set the form action dynamically
+            const form = document.querySelector('#form-container form');
+            if (form) {
+                form.setAttribute('action', formAction);
+            }
+
+            // Set focus on the name input after form is created
+            const nameInput = document.getElementById('name');
+            if (nameInput) {
+                nameInput.focus();
+            }
+        })();
+    </script>
 </body>
 
 </html>
