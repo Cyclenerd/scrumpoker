@@ -86,7 +86,7 @@ Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTIN
 
 ## Credits
 
-All background animations are based on GLSL shader animation created by [KF2015](https://www.youtube.com/@KF2015) found on [YouTube](https://www.youtube.com/watch?v=7GutRIhmTwQ). The code was adapted to run in a browser using WebGL.
+All background animations are based on GLSL shader animation created by [KF2015](https://www.youtube.com/@KF-2015) found on [YouTube](https://www.youtube.com/watch?v=7GutRIhmTwQ). The code was adapted to run in a browser using WebGL.
 
 **Attribution Requirement**: If you re-use one of the animations, please credit KF2015!
 
