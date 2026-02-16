@@ -416,10 +416,9 @@
             const allCleared = players.every(p => !p.votedAt);
             if (allCleared && !isRevealed && !wasAllVotesCleared) {
                 playNewRoundAnimation();
-            }
-
-            const shouldSyncTimer = streamUpdatedAt && (!lastTimerUpdatedAt || (allCleared && !isRevealed && !wasAllVotesCleared));
-            if (shouldSyncTimer && streamUpdatedAt !== lastTimerUpdatedAt) {
+                startTimer(Date.now());
+                lastTimerUpdatedAt = streamUpdatedAt || Date.now();
+            } else if (streamUpdatedAt && !lastTimerUpdatedAt) {
                 startTimer(streamUpdatedAt);
                 lastTimerUpdatedAt = streamUpdatedAt;
             }
