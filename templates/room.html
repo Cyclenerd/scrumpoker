@@ -36,14 +36,18 @@
 
         // updateTimer refreshes the big stopwatch on the page every second.
         function updateTimer() {
-            if (typeof startTime !== 'number') {
+            const timerEl = document.getElementById('timer');
+            if (!timerEl) return;
+            
+            if (typeof startTime !== 'number' || !Number.isFinite(startTime)) {
+                timerEl.textContent = '00:00';
                 return;
             }
             const now = Date.now();
             const elapsed = now - startTime;
             const seconds = Math.floor((elapsed / 1000) % 60);
             const minutes = Math.floor((elapsed / 1000 / 60));
-            document.getElementById('timer').textContent =
+            timerEl.textContent =
                 (minutes < 10 ? '0' : '') + minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
         }
 
