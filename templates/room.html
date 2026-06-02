@@ -266,7 +266,28 @@
             }).join('');
         }
 
-        // calculateStats produces average/most-common values for the revealed results panel.
+        // Numeric deck values available for nearest-card lookup. Keep in sync with the card grid above.
+        const DECK_VALUES = [0, 1, 2, 3, 5, 8, 13, 21];
+
+        // nearestDeckValue picks the deck card closest to the supplied average, rounding up on ties.
+        function nearestDeckValue(avg) {
+            if (avg === null || !Number.isFinite(avg)) {
+                return null;
+            }
+            let best = DECK_VALUES[0];
+            let bestDiff = Math.abs(avg - best);
+            for (let i = 1; i < DECK_VALUES.length; i++) {
+                const candidate = DECK_VALUES[i];
+                const diff = Math.abs(avg - candidate);
+                if (diff < bestDiff || (diff === bestDiff && candidate > best)) {
+                    best = candidate;
+                    bestDiff = diff;
+                }
+            }
+            return best;
+        }
+
+        // calculateStats produces average/nearest-card values for the revealed results panel.
         function calculateStats(state) {
             const players = serializePlayers(state.players || state.Players);
             const votes = players.filter(p => p.vote);
@@ -288,7 +309,8 @@
             }, {});
 
             const sortedEntries = Object.entries(tally).sort((a, b) => b[1].length - a[1].length);
-            const mostCommon = sortedEntries.length ? sortedEntries[0][0] : null;
+            const nearestCard = avg !== null ? nearestDeckValue(avg) : null;
+            const nearest = nearestCard !== null ? String(nearestCard) : null;
 
             return {
                 avg,
@@ -296,7 +318,7 @@
                 max,
                 tally: sortedEntries,
                 totalVotes: votes.length,
-                mostCommon
+                nearest
             };
         }
 
@@ -326,16 +348,12 @@
 
             const stats = calculateStats(state);
             avgEl.textContent = stats.avg !== null ? stats.avg.toFixed(1) : '-';
-            nearestValueEl.textContent = stats.mostCommon || '-';
+            nearestValueEl.textContent = stats.nearest || '-';
             if (nearestImage) {
-                if (!stats.mostCommon) {
+                if (!stats.nearest) {
                     nearestImage.src = '/static/img/cards/back.webp';
-                } else if (stats.mostCommon === '?') {
-                    nearestImage.src = '/static/img/cards/questionmark.webp';
-                } else if (stats.mostCommon === '☕') {
-                    nearestImage.src = '/static/img/cards/coffee.webp';
                 } else {
-                    nearestImage.src = `/static/img/cards/${stats.mostCommon}.webp`;
+                    nearestImage.src = `/static/img/cards/${stats.nearest}.webp`;
                 }
             }
             rangeLabel.innerHTML = stats.min !== null && stats.max !== null
