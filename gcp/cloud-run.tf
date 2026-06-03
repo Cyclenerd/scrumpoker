@@ -6,13 +6,13 @@ data "google_artifact_registry_docker_image" "container-image-scrumpoker" {
   repository_id = module.artifact-registry-container.name
   image_name    = "app:latest" # Defined in cloudbuild-container.template.yaml
   depends_on = [
-    null_resource.build-github-runners-manager-container
+    null_resource.build-scrumpoker-container
   ]
 }
 
 # Deploy the Scrum Poker app service on Cloud Run
 # https://github.com/GoogleCloudPlatform/cloud-foundation-fabric/blob/v52.0.0/modules/cloud-run-v2/README.md
-module "cloud_run_github_runners_manager" {
+module "cloud_run_scrumpoker" {
   source     = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/cloud-run-v2?ref=v52.0.0"
   project_id = module.project.project_id
   name       = "scrumpoker-${local.region_shortnames[var.region]}"
@@ -66,4 +66,12 @@ module "cloud_run_github_runners_manager" {
   depends_on = [
     time_sleep.wait_for_service_account_cloud_run
   ]
+}
+
+# Preserve the already-deployed Cloud Run service after renaming the module
+# from the misleading "github_runners_manager" identifier. This is a pure
+# state move (no destroy/recreate).
+moved {
+  from = module.cloud_run_github_runners_manager
+  to   = module.cloud_run_scrumpoker
 }

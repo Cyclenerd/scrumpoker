@@ -1,6 +1,6 @@
 # Service URL of the Scrum Poker app (Cloud Run)
 output "scrumpoker_url" {
-  value = module.cloud_run_github_runners_manager.service_uri
+  value = module.cloud_run_scrumpoker.service_uri
 }
 
 # Generate Cloud Build configuration for building the container image
@@ -14,7 +14,7 @@ resource "local_file" "cloudbuild-scrumpoker-config" {
 }
 
 # Generate shell script to trigger Cloud Build for the container image
-resource "local_file" "cloudbuild-github-runners-manager-script" {
+resource "local_file" "cloudbuild-scrumpoker-script" {
   filename        = "${path.module}/build-container.sh"
   file_permission = "0750"
   content = templatefile("${path.module}/build-container.template.sh", {
@@ -25,15 +25,15 @@ resource "local_file" "cloudbuild-github-runners-manager-script" {
 }
 
 # Trigger the build of the container image when relevant files change
-resource "null_resource" "build-github-runners-manager-container" {
+resource "null_resource" "build-scrumpoker-container" {
   triggers = {
-    script_hash     = sha256(local_file.cloudbuild-github-runners-manager-script.content)
+    script_hash     = sha256(local_file.cloudbuild-scrumpoker-script.content)
     config_hash     = sha256(local_file.cloudbuild-scrumpoker-config.content)
     dockerfile_hash = sha256(file("${path.module}/../Dockerfile"))
   }
 
   provisioner "local-exec" {
-    command = local_file.cloudbuild-github-runners-manager-script.filename
+    command = local_file.cloudbuild-scrumpoker-script.filename
   }
 
   depends_on = [
@@ -52,4 +52,17 @@ resource "local_file" "terraform-providers-file-gcs" {
   content = templatefile("${path.module}/providers.tf.template", {
     bucket = module.gcs-scrumpoker-iac.name
   })
+}
+
+# Preserve already-deployed resources after renaming them away from the
+# misleading "github-runners-manager" identifiers. These are pure state
+# moves (no destroy/recreate).
+moved {
+  from = local_file.cloudbuild-github-runners-manager-script
+  to   = local_file.cloudbuild-scrumpoker-script
+}
+
+moved {
+  from = null_resource.build-github-runners-manager-container
+  to   = null_resource.build-scrumpoker-container
 }
