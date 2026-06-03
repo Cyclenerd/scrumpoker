@@ -51,7 +51,7 @@ module "gcs-scrumpoker-cloud-build" {
   ]
 }
 
-# GCS bucket for storing the SQLite database
+# GCS bucket for storing the JSON files
 module "gcs-scrumpoker-database" {
   source        = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/gcs?ref=v52.0.0"
   project_id    = module.project.project_id
