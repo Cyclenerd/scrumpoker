@@ -13,7 +13,7 @@ data "google_artifact_registry_docker_image" "container-image-scrumpoker" {
 # Deploy the Scrum Poker app service on Cloud Run
 # https://github.com/GoogleCloudPlatform/cloud-foundation-fabric/blob/v52.0.0/modules/cloud-run-v2/README.md
 module "cloud_run_scrumpoker" {
-  source     = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/cloud-run-v2?ref=v52.0.0"
+  source     = "git::https://github.com/GoogleCloudPlatform/cloud-foundation-fabric//modules/cloud-run-v2?ref=v56.1.0"
   project_id = module.project.project_id
   name       = "scrumpoker-${local.region_shortnames[var.region]}"
   type       = "SERVICE"
